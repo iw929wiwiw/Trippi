@@ -1,4 +1,5 @@
 -- SecretFinder — Full merged script (ESP fixes + hop ignore + mutation detection)
+-- Updated to prefer models under Workspace.Plots (new game change)
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local HttpService = game:GetService("HttpService")
@@ -435,20 +436,35 @@ local function matchesConfigFilter(model)
     return sanitizedActual == sanitizedDesired
 end
 
+-- Helper to iterate search roots (prefers Workspace.Plots if present) and avoid duplicates
+local function iterateSearchModels()
+    local seen = {}
+    local models = {}
+    local roots = { Workspace }
+    if Workspace:FindFirstChild("Plots") then
+        table.insert(roots, Workspace.Plots)
+    end
+
+    for _, root in ipairs(roots) do
+        for _, obj in ipairs(root:GetDescendants()) do
+            if obj:IsA("Model") and (not seen[obj]) then
+                seen[obj] = true
+                table.insert(models, obj)
+            end
+        end
+    end
+    return models
+end
+
 -- NEW: highlight ALL brainrots matching your config (gods -> yellow, secrets -> green) and use mutation-based color
 local function findAllAndHighlight()
     local anyFound = false
     local firstFoundInfo = nil
 
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Model")
-            and getgenv().BrainrotConfig
-            and getgenv().BrainrotConfig[obj.Name]
-        then
-            -- Check config filtering (supports boolean or table with Mutation key)
+    for _, obj in ipairs(iterateSearchModels()) do
+        if obj and getgenv().BrainrotConfig and getgenv().BrainrotConfig[obj.Name] then
             local entry = getConfigEntry(obj.Name)
             if entry and entry.Enabled then
-                -- If user specified a Mutation filter (not Any), only accept matching mutation models
                 local part = getFirstRenderablePart(obj)
                 local mutationText = getMutation(part)
                 local pass = false
@@ -559,14 +575,9 @@ task.spawn(function()
         local currentMatches = {}
         local firstFoundInfo = nil
 
-        -- scan for matching models
-        for _, obj in ipairs(Workspace:GetDescendants()) do
-            if obj:IsA("Model")
-                and getgenv().BrainrotConfig
-                and getgenv().BrainrotConfig[obj.Name]
-                and (brainrotRanking[obj.Name] or brainrotSecrets[obj.Name] or brainrotGods[obj.Name])
-            then
-                -- apply config filtering per-model
+        -- scan for matching models (prefers Workspace.Plots)
+        for _, obj in ipairs(iterateSearchModels()) do
+            if obj and getgenv().BrainrotConfig and getgenv().BrainrotConfig[obj.Name] and (brainrotRanking[obj.Name] or brainrotSecrets[obj.Name] or brainrotGods[obj.Name]) then
                 local entry = getConfigEntry(obj.Name)
                 if entry and entry.Enabled then
                     local part = getFirstRenderablePart(obj)

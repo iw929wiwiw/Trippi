@@ -8,6 +8,10 @@ local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = 109983668079237
 
+-- Ensure allowed / banned place IDs are strings for safe comparison with server fields
+local ALLOWED_PLACE_ID_STR = tostring(109983668079237)
+local BANNED_PLACE_ID_STR  = tostring(96342491571673)
+
 -- Updated ranking: ALL Gods first (1..22) then Secrets (23..49)
 local brainrotRanking = {
     -- Gods (highest priority)
@@ -263,6 +267,7 @@ local function findAllAndHighlight()
 end
 
 function searchAllServers(cursor)
+    -- Always use the allowed PLACE_ID when querying servers
     local url = "https://games.roblox.com/v1/games/" .. PLACE_ID .. "/servers/Public?sortOrder=Asc&limit=100"
     if cursor then url = url .. "&cursor=" .. cursor end
     local success, result = pcall(function()
@@ -273,14 +278,26 @@ function searchAllServers(cursor)
         return searchAllServers()
     end
     for _, server in ipairs(result.data) do
-        if not getgenv().VisitedServers[server.id] and server.playing < server.maxPlayers then
-            getgenv().VisitedServers[server.id] = true
-            task.delay(0.1, function()
-                pcall(function()
-                    TeleportService:TeleportToPlaceInstance(PLACE_ID, server.id, LocalPlayer)
-                end)
-            end)
-            return
+        -- robust place id extraction (some responses use placeId or rootPlaceId)
+        local serverPlaceIdStr = tostring(server.placeId or server.rootPlaceId or PLACE_ID)
+
+        -- Skip servers that belong to the banned place id
+        if serverPlaceIdStr == BANNED_PLACE_ID_STR then
+            -- skip
+        else
+            -- Only allow hopping to the explicit allowed place id (safety check)
+            if serverPlaceIdStr == ALLOWED_PLACE_ID_STR then
+                if not getgenv().VisitedServers[server.id] and server.playing < server.maxPlayers then
+                    getgenv().VisitedServers[server.id] = true
+                    task.delay(0.1, function()
+                        pcall(function()
+                            -- Always teleport to the ALLOWED PLACE_ID (number) and server.id
+                            TeleportService:TeleportToPlaceInstance(PLACE_ID, server.id, LocalPlayer)
+                        end)
+                    end)
+                    return
+                end
+            end
         end
     end
     if result.nextPageCursor then

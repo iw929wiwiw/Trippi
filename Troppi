@@ -1,4 +1,4 @@
--- SecretFinder — Fully merged script (no ignored place id, no normalization lines, mutation detection, ESP)
+-- SecretFinder — Full merged script (ESP fixes + hop ignore + mutation detection)
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local HttpService = game:GetService("HttpService")
@@ -10,6 +10,9 @@ local Workspace = game:GetService("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = 109983668079237
+
+-- Ignore this place id when hopping
+local IGNORED_PLACE_ID = "96342491571673"
 
 -- Updated ranking: ALL Gods first (1..22) then Secrets (23..49)
 local brainrotRanking = {
@@ -487,7 +490,7 @@ local function findAllAndHighlight()
     end
 end
 
--- searchAllServers with no ignored place id and no normalization lines
+-- Replace your existing searchAllServers with this version that ignores IGNORED_PLACE_ID
 function searchAllServers(cursor)
     local url = "https://games.roblox.com/v1/games/" .. PLACE_ID .. "/servers/Public?sortOrder=Asc&limit=100"
     if cursor then url = url .. "&cursor=" .. cursor end
@@ -502,15 +505,24 @@ function searchAllServers(cursor)
     end
 
     for _, server in ipairs(result.data) do
-        -- skip servers we've already visited and only join non-full servers
-        if server and not getgenv().VisitedServers[server.id] and server.playing < server.maxPlayers then
-            getgenv().VisitedServers[server.id] = true
-            task.delay(0.1, function()
-                pcall(function()
-                    TeleportService:TeleportToPlaceInstance(PLACE_ID, server.id, LocalPlayer)
+        -- normalize fields to strings for safe comparison
+        local sid = tostring(server.id or "")
+        local spid = tostring(server.placeId or "")
+        local sroot = tostring(server.rootPlaceId or "")
+
+        -- skip if this server matches the ignored place id
+        if sid == IGNORED_PLACE_ID or spid == IGNORED_PLACE_ID or sroot == IGNORED_PLACE_ID then
+            -- intentionally skip this server
+        else
+            if not getgenv().VisitedServers[server.id] and server.playing < server.maxPlayers then
+                getgenv().VisitedServers[server.id] = true
+                task.delay(0.1, function()
+                    pcall(function()
+                        TeleportService:TeleportToPlaceInstance(PLACE_ID, server.id, LocalPlayer)
+                    end)
                 end)
-            end)
-            return
+                return
+            end
         end
     end
 

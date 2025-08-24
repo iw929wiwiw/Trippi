@@ -341,28 +341,71 @@ function searchAllServers(cursor)
     end
 end
 
--- Infinite spam hop unless any brainrot from config is found; when found, highlight ALL of them
+-- Continuous highlight updater: auto-refresh highlights every 0.2s
+local highlightedModels = {}
+
+local function removeHighlightFromModel(model)
+    if not model or not model:IsA("Model") then return end
+    local h = model:FindFirstChild("BrainrotHighlight")
+    if h then pcall(function() h:Destroy() end) end
+
+    -- remove any BillboardGui named BrainrotLabel inside the model
+    for _, desc in ipairs(model:GetDescendants()) do
+        if desc:IsA("BillboardGui") and desc.Name == "BrainrotLabel" then
+            pcall(function() desc:Destroy() end)
+        end
+    end
+
+    highlightedModels[model] = nil
+end
+
 task.spawn(function()
-    while true do
-        local found = false
+    while task.wait(0.2) do
+        local anyFound = false
+        local currentMatches = {}
+
+        -- scan for matching models
         for _, obj in ipairs(Workspace:GetDescendants()) do
             if obj:IsA("Model")
                 and getgenv().BrainrotConfig
                 and getgenv().BrainrotConfig[obj.Name]
                 and (brainrotRanking[obj.Name] or brainrotSecrets[obj.Name] or brainrotGods[obj.Name])
             then
-                found = true
-                break
+                currentMatches[obj] = true
+                anyFound = true
+
+                if not highlightedModels[obj] then
+                    local isGod = brainrotGods[obj.Name] == true
+                    local isSecret = brainrotSecrets[obj.Name] == true
+                    if not isGod and not isSecret and brainrotRanking[obj.Name] then
+                        isSecret = true
+                    end
+
+                    pcall(function()
+                        highlightModel(obj, obj.Name, isGod, isSecret)
+                    end)
+
+                    highlightedModels[obj] = true
+                end
             end
         end
 
-        if found then
-            task.wait(0.1)
-            findAllAndHighlight()
-            break
+        -- remove highlights for models that no longer match or were removed
+        for model, _ in pairs(highlightedModels) do
+            if (not currentMatches[model]) or (not model.Parent) then
+                pcall(function() removeHighlightFromModel(model) end)
+            end
+        end
+
+        if anyFound then
+            -- ensure the GUI is shown (but don't spam-create it)
+            local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+            if playerGui and not playerGui:FindFirstChild("SecretFinderGUI") then
+                pcall(showFoundGui)
+            end
         else
-            task.wait(0.1)
-            searchAllServers()
+            -- nothing found in this server: continue searching/hopping
+            pcall(function() searchAllServers() end)
         end
     end
 end)

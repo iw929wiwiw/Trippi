@@ -1,3 +1,4 @@
+-- SecretFinder — Full merged script (ESP fixes + hop ignore)
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local HttpService = game:GetService("HttpService")
@@ -138,46 +139,64 @@ local toolsToBuy = {
 local BuyRemote = ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Net"):WaitForChild("RF/CoinsShopService/RequestBuy")
 getgenv().VisitedServers = getgenv().VisitedServers or {}
 
--- highlight now accepts secret/god flags and colors accordingly
-local function highlight(part, name, isGod, isSecret)
-    if not part or not part:IsA("BasePart") then return end
-    if part:FindFirstChild("BrainrotBox") then return end
+-- Helper: find the first BasePart to attach adornments/labels
+local function getFirstRenderablePart(model)
+    if not model or not model:IsA("Model") then return nil end
+    if model.PrimaryPart and model.PrimaryPart:IsA("BasePart") then
+        return model.PrimaryPart
+    end
+    for _, d in ipairs(model:GetDescendants()) do
+        if d:IsA("BasePart") then
+            return d
+        end
+    end
+    return nil
+end
 
-    local box = Instance.new("BoxHandleAdornment")
-    box.Size = part.Size * 1.25
-    box.Adornee = part
-    box.AlwaysOnTop = true
-    box.ZIndex = 10
-    box.Transparency = 0.2
-    box.Name = "BrainrotBox"
+-- Reliable highlighting using Roblox's Highlight + Billboard label
+local function highlightModel(model, name, isGod, isSecret)
+    if not model or not model:IsA("Model") then return end
+    if model:FindFirstChild("BrainrotHighlight") then return end
+
+    local part = getFirstRenderablePart(model)
+    if not part then return end
+
+    local h = Instance.new("Highlight")
+    h.Name = "BrainrotHighlight"
+    h.Adornee = model
+    h.Parent = model
+    h.FillTransparency = 0.5
+    h.OutlineTransparency = 0
+    h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 
     if isGod then
-        box.Color3 = Color3.fromRGB(255, 200, 0) -- YELLOW for gods
+        h.FillColor = Color3.fromRGB(255, 200, 0)
+        h.OutlineColor = Color3.fromRGB(255, 200, 0)
     elseif isSecret then
-        box.Color3 = Color3.fromRGB(0, 255, 0) -- GREEN for secrets
+        h.FillColor = Color3.fromRGB(0, 255, 0)
+        h.OutlineColor = Color3.fromRGB(0, 255, 0)
     else
-        box.Color3 = Color3.fromRGB(0, 170, 255) -- BLUE fallback
+        h.FillColor = Color3.fromRGB(0, 170, 255)
+        h.OutlineColor = Color3.fromRGB(0, 170, 255)
     end
 
-    box.Parent = part
-
+    -- Billboard label (so you can read the name)
     local billboard = Instance.new("BillboardGui")
-    billboard.Size = UDim2.new(0, 200, 0, 50)
+    billboard.Name = "BrainrotLabel"
+    billboard.Size = UDim2.new(0, 220, 0, 50)
     billboard.Adornee = part
     billboard.AlwaysOnTop = true
-    billboard.StudsOffset = Vector3.new(0, part.Size.Y * 1.5, 0)
-    billboard.Name = "BrainrotLabel"
-    billboard.Parent = part
+    billboard.MaxDistance = 3000
+    billboard.StudsOffsetWorldSpace = Vector3.new(0, 4, 0)
+    billboard.Parent = model
 
-    local label = Instance.new("TextLabel", billboard)
-    label.Size = UDim2.new(1, 0, 1, 0)
+    local label = Instance.new("TextLabel")
     label.BackgroundTransparency = 1
-    local prefix = isGod and "Brainrot God - " or (isSecret and "Secret - " or "Unknown - ")
-    label.Text = prefix .. name
-    label.TextStrokeTransparency = 0
+    label.Size = UDim2.new(1, 0, 1, 0)
     label.Font = Enum.Font.GothamSemibold
     label.TextScaled = true
-
+    label.TextStrokeTransparency = 0
+    label.Text = (isGod and "Brainrot God - " or (isSecret and "Secret - " or "Unknown - ")) .. name
     if isGod then
         label.TextColor3 = Color3.fromRGB(255, 200, 0)
     elseif isSecret then
@@ -185,6 +204,7 @@ local function highlight(part, name, isGod, isSecret)
     else
         label.TextColor3 = Color3.fromRGB(0, 170, 255)
     end
+    label.Parent = billboard
 end
 
 local function autoBuyTools()
@@ -251,19 +271,20 @@ end
 -- NEW: highlight ALL brainrots matching your config (gods -> yellow, secrets -> green)
 local function findAllAndHighlight()
     local anyFound = false
-    for _, obj in ipairs(Workspace:GetChildren()) do
-        if obj:IsA("Model") and getgenv().BrainrotConfig and getgenv().BrainrotConfig[obj.Name] then
-            local basePart = obj:FindFirstChildWhichIsA("BasePart")
-            if basePart then
-                local isGod = brainrotGods[obj.Name] == true
-                local isSecret = brainrotSecrets[obj.Name] == true
-                -- If not explicitly in gods/secrets but present in ranking, treat as secret by default
-                if not isGod and not isSecret and brainrotRanking[obj.Name] then
-                    isSecret = true
-                end
-                highlight(basePart, obj.Name, isGod, isSecret)
-                anyFound = true
+
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model")
+            and getgenv().BrainrotConfig
+            and getgenv().BrainrotConfig[obj.Name]
+        then
+            local isGod = brainrotGods[obj.Name] == true
+            local isSecret = brainrotSecrets[obj.Name] == true
+            if not isGod and not isSecret and brainrotRanking[obj.Name] then
+                isSecret = true -- default to secret styling if only in ranking
             end
+
+            highlightModel(obj, obj.Name, isGod, isSecret)
+            anyFound = true
         end
     end
 
@@ -324,8 +345,12 @@ end
 task.spawn(function()
     while true do
         local found = false
-        for _, obj in ipairs(Workspace:GetChildren()) do
-            if obj:IsA("Model") and getgenv().BrainrotConfig and getgenv().BrainrotConfig[obj.Name] and (brainrotRanking[obj.Name] or brainrotSecrets[obj.Name] or brainrotGods[obj.Name]) then
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("Model")
+                and getgenv().BrainrotConfig
+                and getgenv().BrainrotConfig[obj.Name]
+                and (brainrotRanking[obj.Name] or brainrotSecrets[obj.Name] or brainrotGods[obj.Name])
+            then
                 found = true
                 break
             end

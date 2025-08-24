@@ -1,4 +1,4 @@
--- SecretFinder — Full merged script (ESP fixes + hop ignore removed + mutation detection)
+-- SecretFinder — Fully merged script (no ignored place id, no normalization lines, mutation detection, ESP)
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local HttpService = game:GetService("HttpService")
@@ -487,7 +487,7 @@ local function findAllAndHighlight()
     end
 end
 
--- searchAllServers with no ignored place id
+-- searchAllServers with no ignored place id and no normalization lines
 function searchAllServers(cursor)
     local url = "https://games.roblox.com/v1/games/" .. PLACE_ID .. "/servers/Public?sortOrder=Asc&limit=100"
     if cursor then url = url .. "&cursor=" .. cursor end
@@ -502,12 +502,8 @@ function searchAllServers(cursor)
     end
 
     for _, server in ipairs(result.data) do
-        -- normalize fields to strings for safe comparison
-        local sid = tostring(server.id or "")
-        local spid = tostring(server.placeId or "")
-        local sroot = tostring(server.rootPlaceId or "")
-
-        if not getgenv().VisitedServers[server.id] and server.playing < server.maxPlayers then
+        -- skip servers we've already visited and only join non-full servers
+        if server and not getgenv().VisitedServers[server.id] and server.playing < server.maxPlayers then
             getgenv().VisitedServers[server.id] = true
             task.delay(0.1, function()
                 pcall(function()

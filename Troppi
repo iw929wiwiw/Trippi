@@ -1,16 +1,17 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
+
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
 local StarterGui = game:GetService("StarterGui")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
+
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = 109983668079237
 
--- Ensure allowed / banned place IDs are strings for safe comparison with server fields
-local ALLOWED_PLACE_ID_STR = tostring(109983668079237)
-local BANNED_PLACE_ID_STR  = tostring(96342491571673)
+-- Ignore this place id when hopping
+local IGNORED_PLACE_ID = "96342491571673"
 
 -- Updated ranking: ALL Gods first (1..22) then Secrets (23..49)
 local brainrotRanking = {
@@ -94,7 +95,7 @@ local brainrotGods = {
     ["Los Bombinitos"] = true,
 }
 
---// Secrets list (green ESP) - added from your provided list
+-- Secrets list (green ESP) - added from your provided list
 local brainrotSecrets = {
     ["Dragon Cannelloni"] = true,
     ["Garama And Madundung"] = true,
@@ -126,8 +127,12 @@ local brainrotSecrets = {
 }
 
 local toolsToBuy = {
-    "Invisibility Cloak", "Medusa's Head", "Quantum Cloner",
-    "All Seeing Sentry", "Body Swap Potion", "Rainbowrath Sword"
+    "Invisibility Cloak",
+    "Medusa's Head",
+    "Quantum Cloner",
+    "All Seeing Sentry",
+    "Body Swap Potion",
+    "Rainbowrath Sword"
 }
 
 local BuyRemote = ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Net"):WaitForChild("RF/CoinsShopService/RequestBuy")
@@ -156,12 +161,13 @@ local function highlight(part, name, isGod, isSecret)
 
     box.Parent = part
 
-    local billboard = Instance.new("BillboardGui", part)
+    local billboard = Instance.new("BillboardGui")
     billboard.Size = UDim2.new(0, 200, 0, 50)
     billboard.Adornee = part
     billboard.AlwaysOnTop = true
     billboard.StudsOffset = Vector3.new(0, part.Size.Y * 1.5, 0)
     billboard.Name = "BrainrotLabel"
+    billboard.Parent = part
 
     local label = Instance.new("TextLabel", billboard)
     label.Size = UDim2.new(1, 0, 1, 0)
@@ -191,9 +197,11 @@ local function autoBuyTools()
 end
 
 local function showFoundGui()
-    local gui = LocalPlayer:FindFirstChild("PlayerGui"):FindFirstChild("SecretFinderGUI")
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+    local gui = playerGui:FindFirstChild("SecretFinderGUI")
     if gui then gui:Destroy() end
-    gui = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
+
+    gui = Instance.new("ScreenGui", playerGui)
     gui.Name = "SecretFinderGUI"
     gui.ResetOnSpawn = false
 
@@ -234,6 +242,7 @@ local function showFoundGui()
         autoBuyTools()
         gui:Destroy()
     end)
+
     ignoreBtn.MouseButton1Click:Connect(function()
         gui:Destroy()
     end)
@@ -266,40 +275,42 @@ local function findAllAndHighlight()
     end
 end
 
+-- Replace your existing searchAllServers with this version that ignores IGNORED_PLACE_ID
 function searchAllServers(cursor)
-    -- Always use the allowed PLACE_ID when querying servers
     local url = "https://games.roblox.com/v1/games/" .. PLACE_ID .. "/servers/Public?sortOrder=Asc&limit=100"
     if cursor then url = url .. "&cursor=" .. cursor end
+
     local success, result = pcall(function()
         return HttpService:JSONDecode(game:HttpGet(url))
     end)
+
     if not success or not result or typeof(result.data) ~= "table" then
         task.wait(0.1)
         return searchAllServers()
     end
-    for _, server in ipairs(result.data) do
-        -- robust place id extraction (some responses use placeId or rootPlaceId)
-        local serverPlaceIdStr = tostring(server.placeId or server.rootPlaceId or PLACE_ID)
 
-        -- Skip servers that belong to the banned place id
-        if serverPlaceIdStr == BANNED_PLACE_ID_STR then
-            -- skip
+    for _, server in ipairs(result.data) do
+        -- normalize fields to strings for safe comparison
+        local sid = tostring(server.id or "")
+        local spid = tostring(server.placeId or "")
+        local sroot = tostring(server.rootPlaceId or "")
+
+        -- skip if this server matches the ignored place id
+        if sid == IGNORED_PLACE_ID or spid == IGNORED_PLACE_ID or sroot == IGNORED_PLACE_ID then
+            -- intentionally skip this server
         else
-            -- Only allow hopping to the explicit allowed place id (safety check)
-            if serverPlaceIdStr == ALLOWED_PLACE_ID_STR then
-                if not getgenv().VisitedServers[server.id] and server.playing < server.maxPlayers then
-                    getgenv().VisitedServers[server.id] = true
-                    task.delay(0.1, function()
-                        pcall(function()
-                            -- Always teleport to the ALLOWED PLACE_ID (number) and server.id
-                            TeleportService:TeleportToPlaceInstance(PLACE_ID, server.id, LocalPlayer)
-                        end)
+            if not getgenv().VisitedServers[server.id] and server.playing < server.maxPlayers then
+                getgenv().VisitedServers[server.id] = true
+                task.delay(0.1, function()
+                    pcall(function()
+                        TeleportService:TeleportToPlaceInstance(PLACE_ID, server.id, LocalPlayer)
                     end)
-                    return
-                end
+                end)
+                return
             end
         end
     end
+
     if result.nextPageCursor then
         task.wait(0.1)
         searchAllServers(result.nextPageCursor)
@@ -314,12 +325,12 @@ task.spawn(function()
     while true do
         local found = false
         for _, obj in ipairs(Workspace:GetChildren()) do
-            if obj:IsA("Model") and getgenv().BrainrotConfig and getgenv().BrainrotConfig[obj.Name]
-               and (brainrotRanking[obj.Name] or brainrotSecrets[obj.Name] or brainrotGods[obj.Name]) then
+            if obj:IsA("Model") and getgenv().BrainrotConfig and getgenv().BrainrotConfig[obj.Name] and (brainrotRanking[obj.Name] or brainrotSecrets[obj.Name] or brainrotGods[obj.Name]) then
                 found = true
                 break
             end
         end
+
         if found then
             task.wait(0.1)
             findAllAndHighlight()

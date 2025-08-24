@@ -129,83 +129,10 @@ local toolsToBuy = {
 local BuyRemote = ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Net"):WaitForChild("RF/CoinsShopService/RequestBuy")
 getgenv().VisitedServers = getgenv().VisitedServers or {}
 
--- ---------------------------------------------------------------------
--- Mutation detection helpers (merged from your mutation code)
--- ---------------------------------------------------------------------
-local colorGold     = Color3.fromRGB(237, 178, 0)
-local colorDiamond  = Color3.fromRGB(37, 196, 254)
-local colorCandy    = Color3.fromRGB(255, 182, 255)
-local colorLava     = Color3.fromRGB(255, 94, 0)
-local colorNone     = Color3.fromRGB(163, 162, 165)
-local COLOR_EPSILON = 0.02
-
-local function colorsAreClose(a, b)
-    return math.abs(a.R - b.R) < COLOR_EPSILON
-       and math.abs(a.G - b.G) < COLOR_EPSILON
-       and math.abs(a.B - b.B) < COLOR_EPSILON
-end
-
-local function getMutation(rootPart)
-    if not rootPart or not rootPart:IsA("BasePart") then return "⚪ None" end
-    local col = rootPart.Color
-    if colorsAreClose(col, colorGold) then
-        return "🌕 Gold"
-    elseif colorsAreClose(col, colorDiamond) then
-        return "💎 Diamond"
-    elseif colorsAreClose(col, colorCandy) then
-        return "🍬 Candy"
-    elseif colorsAreClose(col, colorLava) then
-        return "🌋 Lava"
-    elseif colorsAreClose(col, colorNone) then
-        return "⚪ None"
-    else
-        return "⚪ None"
-    end
-end
-
-local function normalizeMutationStr(s)
-    if not s then return "none" end
-    -- remove emoji and non-letter characters, lowercase
-    local cleaned = s:gsub("[^%a]", " ") -- leave letters only separated by spaces
-    cleaned = cleaned:lower():gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
-    if cleaned == "" then return "none" end
-    return cleaned
-end
-
-local function mutationMatchesConfig(configMutation, detectedMutation)
-    -- NEW BEHAVIOR: If configMutation is "None" (or nil), we accept the brainrot normally
-    -- i.e., no mutation requirement. "Any" also accepts everything. Specific names still filter.
-    local cm = (configMutation or "None")
-    local cmn = normalizeMutationStr(cm)
-    local dmn = normalizeMutationStr(detectedMutation)
-
-    if cmn == "any" then
-        return true
-    end
-    if cmn == "none" then
-        -- NEW: treat "None" as "no mutation requirement" -> accept regardless of detected mutation
-        return true
-    end
-    -- specific mutation required
-    return dmn == cmn
-end
-
--- ---------------------------------------------------------------------
--- Highlighting / GUI (modified to show mutation)
--- ---------------------------------------------------------------------
-local function highlight(part, name, isGod, isSecret, mutation)
+-- highlight now accepts secret/god flags and colors accordingly
+local function highlight(part, name, isGod, isSecret)
     if not part or not part:IsA("BasePart") then return end
-    if part:FindFirstChild("BrainrotBox") then
-        local existingBill = part:FindFirstChild("BrainrotLabel")
-        if existingBill and existingBill:IsA("BillboardGui") then
-            local lab = existingBill:FindFirstChildWhichIsA("TextLabel")
-            if lab then
-                local prefix = isGod and "Brainrot God - " or (isSecret and "Secret - " or "Unknown - ")
-                lab.Text = string.format("%s%s [%s]", prefix, name, mutation or "⚪ None")
-            end
-        end
-        return
-    end
+    if part:FindFirstChild("BrainrotBox") then return end
 
     local box = Instance.new("BoxHandleAdornment")
     box.Size = part.Size * 1.25
@@ -236,7 +163,7 @@ local function highlight(part, name, isGod, isSecret, mutation)
     label.Size = UDim2.new(1, 0, 1, 0)
     label.BackgroundTransparency = 1
     local prefix = isGod and "Brainrot God - " or (isSecret and "Secret - " or "Unknown - ")
-    label.Text = string.format("%s%s [%s]", prefix, name, mutation or "⚪ None")
+    label.Text = prefix .. name
     label.TextStrokeTransparency = 0
     label.Font = Enum.Font.GothamSemibold
     label.TextScaled = true
@@ -312,21 +239,17 @@ end
 local function findAllAndHighlight()
     local anyFound = false
     for _, obj in ipairs(Workspace:GetChildren()) do
-        if obj:IsA("Model") and getgenv().BrainrotConfig and getgenv().BrainrotConfig[obj.Name] and getgenv().BrainrotConfig[obj.Name].Enabled then
+        if obj:IsA("Model") and getgenv().BrainrotConfig and getgenv().BrainrotConfig[obj.Name] then
             local basePart = obj:FindFirstChildWhichIsA("BasePart")
             if basePart then
-                local detectedMutation = getMutation(basePart) or "⚪ None"
-                local configMutation = getgenv().BrainrotConfig[obj.Name].Mutation or "None"
-                if mutationMatchesConfig(configMutation, detectedMutation) then
-                    local isGod = brainrotGods[obj.Name] == true
-                    local isSecret = brainrotSecrets[obj.Name] == true
-                    -- If not explicitly in gods/secrets but present in ranking, treat as secret by default
-                    if not isGod and not isSecret and brainrotRanking[obj.Name] then
-                        isSecret = true
-                    end
-                    highlight(basePart, obj.Name, isGod, isSecret, detectedMutation)
-                    anyFound = true
+                local isGod = brainrotGods[obj.Name] == true
+                local isSecret = brainrotSecrets[obj.Name] == true
+                -- If not explicitly in gods/secrets but present in ranking, treat as secret by default
+                if not isGod and not isSecret and brainrotRanking[obj.Name] then
+                    isSecret = true
                 end
+                highlight(basePart, obj.Name, isGod, isSecret)
+                anyFound = true
             end
         end
     end
@@ -374,16 +297,10 @@ task.spawn(function()
     while true do
         local found = false
         for _, obj in ipairs(Workspace:GetChildren()) do
-            if obj:IsA("Model") and getgenv().BrainrotConfig and getgenv().BrainrotConfig[obj.Name] and getgenv().BrainrotConfig[obj.Name].Enabled then
-                local basePart = obj:FindFirstChildWhichIsA("BasePart")
-                if basePart then
-                    local detectedMutation = getMutation(basePart) or "⚪ None"
-                    local configMutation = getgenv().BrainrotConfig[obj.Name].Mutation or "None"
-                    if mutationMatchesConfig(configMutation, detectedMutation) then
-                        found = true
-                        break
-                    end
-                end
+            if obj:IsA("Model") and getgenv().BrainrotConfig and getgenv().BrainrotConfig[obj.Name]
+               and (brainrotRanking[obj.Name] or brainrotSecrets[obj.Name] or brainrotGods[obj.Name]) then
+                found = true
+                break
             end
         end
         if found then

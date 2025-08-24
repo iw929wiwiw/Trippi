@@ -1,4 +1,4 @@
--- SecretFinder — Full merged script (ESP fixes + hop ignore)
+-- SecretFinder — Full merged script (ESP fixes + hop ignore removed + mutation detection)
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local HttpService = game:GetService("HttpService")
@@ -10,9 +10,6 @@ local Workspace = game:GetService("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
 local PLACE_ID = 109983668079237
-
--- Ignore this place id when hopping
-local IGNORED_PLACE_ID = "96342491571673"
 
 -- Updated ranking: ALL Gods first (1..22) then Secrets (23..49)
 local brainrotRanking = {
@@ -139,6 +136,54 @@ local toolsToBuy = {
 local BuyRemote = ReplicatedStorage:WaitForChild("Packages"):WaitForChild("Net"):WaitForChild("RF/CoinsShopService/RequestBuy")
 getgenv().VisitedServers = getgenv().VisitedServers or {}
 
+-- ---------- Mutation color palette + helper ----------
+local colorGold     = Color3.fromRGB(237, 178, 0)
+local colorDiamond  = Color3.fromRGB(37, 196, 254)
+local colorCandy    = Color3.fromRGB(255, 182, 255)
+local colorLava     = Color3.fromRGB(255, 94, 0)
+local colorGalaxy   = Color3.fromRGB(140, 91, 159)
+local colorNone     = Color3.fromRGB(163, 162, 165)
+local COLOR_EPSILON = 0.02
+
+local function colorsAreClose(a, b)
+    if typeof(a) ~= "Color3" or typeof(b) ~= "Color3" then return false end
+    return math.abs(a.R - b.R) < COLOR_EPSILON
+       and math.abs(a.G - b.G) < COLOR_EPSILON
+       and math.abs(a.B - b.B) < COLOR_EPSILON
+end
+
+local function getMutation(rootPart)
+    if not rootPart or not rootPart:IsA("BasePart") then
+        return "⚪ None"
+    end
+    local col = rootPart.Color
+    if colorsAreClose(col, colorGold) then
+        return "🌕 Gold"
+    elseif colorsAreClose(col, colorDiamond) then
+        return "💎 Diamond"
+    elseif colorsAreClose(col, colorCandy) then
+        return "🍬 Candy"
+    elseif colorsAreClose(col, colorLava) then
+        return "🌋 Lava"
+    elseif colorsAreClose(col, colorGalaxy) then
+        return "🌌 Galaxy"
+    elseif colorsAreClose(col, colorNone) then
+        return "⚪ None"
+    else
+        return "⚪ None"
+    end
+end
+
+local function mutationToColor(mutationText)
+    if not mutationText then return nil end
+    if mutationText:find("Gold") then return colorGold end
+    if mutationText:find("Diamond") then return colorDiamond end
+    if mutationText:find("Candy") then return colorCandy end
+    if mutationText:find("Lava") then return colorLava end
+    if mutationText:find("Galaxy") then return colorGalaxy end
+    return nil
+end
+
 -- Helper: find the first BasePart to attach adornments/labels
 local function getFirstRenderablePart(model)
     if not model or not model:IsA("Model") then return nil end
@@ -153,8 +198,38 @@ local function getFirstRenderablePart(model)
     return nil
 end
 
+-- parse user's config mutation for a given name
+-- accepted config forms:
+--  getgenv().BrainrotConfig[name] == true
+--  getgenv().BrainrotConfig[name] == { Enabled = true, Mutation = "Lava" }  (Mutation can be "Any", "None", "Gold", etc)
+local function getConfigEntry(name)
+    if not getgenv().BrainrotConfig then return nil end
+    local v = getgenv().BrainrotConfig[name]
+    if v == nil then return nil end
+    -- boolean true shorthand
+    if v == true then
+        return { Enabled = true, Mutation = "Any" }
+    end
+    if type(v) == "table" then
+        local enabled = v.Enabled
+        if enabled == nil then enabled = true end
+        local mutation = v.Mutation or v.mutation or "Any"
+        return { Enabled = enabled, Mutation = mutation }
+    end
+    -- fallback: treat truthy as enabled any
+    return { Enabled = true, Mutation = "Any" }
+end
+
+local function sanitizeMutationName(s)
+    if not s then return "" end
+    s = tostring(s)
+    s = s:gsub("🌕", ""):gsub("💎",""):gsub("🍬",""):gsub("🌋",""):gsub("🌌","")
+    s = s:gsub("%s+", "") -- remove whitespace
+    return s:lower()
+end
+
 -- Reliable highlighting using Roblox's Highlight + Billboard label
-local function highlightModel(model, name, isGod, isSecret)
+local function highlightModel(model, name, isGod, isSecret, mutationText)
     if not model or not model:IsA("Model") then return end
     if model:FindFirstChild("BrainrotHighlight") then return end
 
@@ -169,21 +244,28 @@ local function highlightModel(model, name, isGod, isSecret)
     h.OutlineTransparency = 0
     h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 
-    if isGod then
-        h.FillColor = Color3.fromRGB(255, 200, 0)
-        h.OutlineColor = Color3.fromRGB(255, 200, 0)
-    elseif isSecret then
-        h.FillColor = Color3.fromRGB(0, 255, 0)
-        h.OutlineColor = Color3.fromRGB(0, 255, 0)
+    -- choose color: prefer mutation color if present; otherwise god/secret defaults
+    local mutColor = mutationToColor(mutationText)
+    if mutColor then
+        h.FillColor = mutColor
+        h.OutlineColor = mutColor
     else
-        h.FillColor = Color3.fromRGB(0, 170, 255)
-        h.OutlineColor = Color3.fromRGB(0, 170, 255)
+        if isGod then
+            h.FillColor = Color3.fromRGB(255, 200, 0)
+            h.OutlineColor = Color3.fromRGB(255, 200, 0)
+        elseif isSecret then
+            h.FillColor = Color3.fromRGB(0, 255, 0)
+            h.OutlineColor = Color3.fromRGB(0, 255, 0)
+        else
+            h.FillColor = Color3.fromRGB(0, 170, 255)
+            h.OutlineColor = Color3.fromRGB(0, 170, 255)
+        end
     end
 
-    -- Billboard label (so you can read the name)
+    -- Billboard label (so you can read the name + mutation)
     local billboard = Instance.new("BillboardGui")
     billboard.Name = "BrainrotLabel"
-    billboard.Size = UDim2.new(0, 220, 0, 50)
+    billboard.Size = UDim2.new(0, 260, 0, 54)
     billboard.Adornee = part
     billboard.AlwaysOnTop = true
     billboard.MaxDistance = 3000
@@ -191,11 +273,15 @@ local function highlightModel(model, name, isGod, isSecret)
     billboard.Parent = model
 
     local label = Instance.new("TextLabel")
+    label.Name = "BrainrotLabelMain"
     label.BackgroundTransparency = 1
-    label.Size = UDim2.new(1, 0, 1, 0)
+    label.Size = UDim2.new(1, 0, 0.6, 0)
+    label.Position = UDim2.new(0,0,0,0)
     label.Font = Enum.Font.GothamSemibold
     label.TextScaled = true
     label.TextStrokeTransparency = 0
+    label.TextWrapped = true
+    label.TextYAlignment = Enum.TextYAlignment.Top
     label.Text = (isGod and "Brainrot God - " or (isSecret and "Secret - " or "Unknown - ")) .. name
     if isGod then
         label.TextColor3 = Color3.fromRGB(255, 200, 0)
@@ -205,6 +291,20 @@ local function highlightModel(model, name, isGod, isSecret)
         label.TextColor3 = Color3.fromRGB(0, 170, 255)
     end
     label.Parent = billboard
+
+    local subLabel = Instance.new("TextLabel")
+    subLabel.Name = "BrainrotLabelMutation"
+    subLabel.BackgroundTransparency = 1
+    subLabel.Size = UDim2.new(1, 0, 0.4, 0)
+    subLabel.Position = UDim2.new(0,0,0.6,0)
+    subLabel.Font = Enum.Font.GothamSemibold
+    subLabel.TextScaled = true
+    subLabel.TextStrokeTransparency = 0
+    subLabel.TextWrapped = true
+    subLabel.TextYAlignment = Enum.TextYAlignment.Top
+    subLabel.Text = mutationText or "⚪ None"
+    subLabel.TextColor3 = (mutationToColor(mutationText) or Color3.fromRGB(200,200,200))
+    subLabel.Parent = billboard
 end
 
 local function autoBuyTools()
@@ -216,7 +316,7 @@ local function autoBuyTools()
     end
 end
 
-local function showFoundGui()
+local function showFoundGui(foundName, isGod, isSecret, mutationText)
     local playerGui = LocalPlayer:WaitForChild("PlayerGui")
     local gui = playerGui:FindFirstChild("SecretFinderGUI")
     if gui then gui:Destroy() end
@@ -226,23 +326,66 @@ local function showFoundGui()
     gui.ResetOnSpawn = false
 
     local frame = Instance.new("Frame", gui)
-    frame.Size = UDim2.new(0, 280, 0, 140)
-    frame.Position = UDim2.new(0.5, -140, 0.4, 0)
+    frame.Size = UDim2.new(0, 300, 0, 160)
+    frame.Position = UDim2.new(0.5, -150, 0.38, 0)
     frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
     frame.BorderSizePixel = 0
     frame.AnchorPoint = Vector2.new(0.5, 0)
 
     local title = Instance.new("TextLabel", frame)
-    title.Size = UDim2.new(1, 0, 0, 40)
+    title.Size = UDim2.new(1, -20, 0, 36)
+    title.Position = UDim2.new(0, 10, 0, 8)
     title.Text = "✓ Secret or God Found!"
     title.TextColor3 = Color3.fromRGB(255, 255, 255)
     title.BackgroundTransparency = 1
     title.Font = Enum.Font.GothamBold
     title.TextScaled = true
 
+    -- Found name + type
+    local foundLabel = Instance.new("TextLabel", frame)
+    foundLabel.Size = UDim2.new(1, -20, 0, 36)
+    foundLabel.Position = UDim2.new(0,10,0,48)
+    foundLabel.BackgroundTransparency = 1
+    foundLabel.Font = Enum.Font.GothamSemibold
+    foundLabel.TextScaled = true
+    foundLabel.TextStrokeTransparency = 0
+    foundLabel.TextWrapped = true
+    if foundName then
+        local ttype = (isGod and "Brainrot God" or (isSecret and "Secret" or "Unknown"))
+        foundLabel.Text = string.format("%s - %s", ttype, foundName)
+        if isGod then
+            foundLabel.TextColor3 = Color3.fromRGB(255,200,0)
+        elseif isSecret then
+            foundLabel.TextColor3 = Color3.fromRGB(0,255,0)
+        else
+            foundLabel.TextColor3 = Color3.fromRGB(0,170,255)
+        end
+    else
+        foundLabel.Text = "Unknown Model"
+        foundLabel.TextColor3 = Color3.fromRGB(200,200,200)
+    end
+
+    -- Mutation label
+    local mutLabel = Instance.new("TextLabel", frame)
+    mutLabel.Size = UDim2.new(1, -20, 0, 24)
+    mutLabel.Position = UDim2.new(0,10,0,92)
+    mutLabel.BackgroundTransparency = 1
+    mutLabel.Font = Enum.Font.GothamSemibold
+    mutLabel.TextScaled = true
+    mutLabel.TextStrokeTransparency = 0
+    mutLabel.TextWrapped = true
+    if mutationText then
+        mutLabel.Text = "Mutation: " .. mutationText
+        local mc = mutationToColor(mutationText)
+        mutLabel.TextColor3 = mc or Color3.fromRGB(200,200,200)
+    else
+        mutLabel.Text = "Mutation: ⚪ None"
+        mutLabel.TextColor3 = Color3.fromRGB(200,200,200)
+    end
+
     local buyBtn = Instance.new("TextButton", frame)
-    buyBtn.Size = UDim2.new(0.45, 0, 0, 40)
-    buyBtn.Position = UDim2.new(0.05, 0, 0.6, 0)
+    buyBtn.Size = UDim2.new(0.45, 0, 0, 36)
+    buyBtn.Position = UDim2.new(0.05, 0, 0.8, 0)
     buyBtn.Text = "Buy Tools"
     buyBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 0)
     buyBtn.Font = Enum.Font.SourceSansBold
@@ -250,8 +393,8 @@ local function showFoundGui()
     buyBtn.TextScaled = true
 
     local ignoreBtn = Instance.new("TextButton", frame)
-    ignoreBtn.Size = UDim2.new(0.45, 0, 0, 40)
-    ignoreBtn.Position = UDim2.new(0.5, 0, 0.6, 0)
+    ignoreBtn.Size = UDim2.new(0.45, 0, 0, 36)
+    ignoreBtn.Position = UDim2.new(0.5, 0, 0.8, 0)
     ignoreBtn.Text = "Ignore"
     ignoreBtn.BackgroundColor3 = Color3.fromRGB(170, 0, 0)
     ignoreBtn.Font = Enum.Font.SourceSansBold
@@ -268,35 +411,83 @@ local function showFoundGui()
     end)
 end
 
--- NEW: highlight ALL brainrots matching your config (gods -> yellow, secrets -> green)
+-- Use: returns true if this model should be considered based on getgenv().BrainrotConfig entry
+local function matchesConfigFilter(model)
+    if not model or not model:IsA("Model") or not getgenv().BrainrotConfig then return false end
+    local entry = getConfigEntry(model.Name)
+    if not entry or not entry.Enabled then return false end
+
+    -- if the user requested a specific mutation, check it.
+    local desired = entry.Mutation or "Any"
+    if desired == "Any" or desired == "any" or desired == "" then
+        return true
+    end
+
+    -- find a renderable part for the model and detect its mutation
+    local part = getFirstRenderablePart(model)
+    local actual = getMutation(part) -- e.g. "🌋 Lava"
+    local sanitizedActual = sanitizeMutationName(actual) -- "lava"
+    local sanitizedDesired = sanitizeMutationName(desired) -- "lava" if user set "Lava"
+    -- allow "none" explicit
+    return sanitizedActual == sanitizedDesired
+end
+
+-- NEW: highlight ALL brainrots matching your config (gods -> yellow, secrets -> green) and use mutation-based color
 local function findAllAndHighlight()
     local anyFound = false
+    local firstFoundInfo = nil
 
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model")
             and getgenv().BrainrotConfig
             and getgenv().BrainrotConfig[obj.Name]
         then
-            local isGod = brainrotGods[obj.Name] == true
-            local isSecret = brainrotSecrets[obj.Name] == true
-            if not isGod and not isSecret and brainrotRanking[obj.Name] then
-                isSecret = true -- default to secret styling if only in ranking
-            end
+            -- Check config filtering (supports boolean or table with Mutation key)
+            local entry = getConfigEntry(obj.Name)
+            if entry and entry.Enabled then
+                -- If user specified a Mutation filter (not Any), only accept matching mutation models
+                local part = getFirstRenderablePart(obj)
+                local mutationText = getMutation(part)
+                local pass = false
+                if entry.Mutation == "Any" or entry.Mutation == "any" or entry.Mutation == "" then
+                    pass = true
+                else
+                    if sanitizeMutationName(mutationText) == sanitizeMutationName(entry.Mutation) then
+                        pass = true
+                    end
+                end
 
-            highlightModel(obj, obj.Name, isGod, isSecret)
-            anyFound = true
+                if pass then
+                    local isGod = brainrotGods[obj.Name] == true
+                    local isSecret = brainrotSecrets[obj.Name] == true
+                    if not isGod and not isSecret and brainrotRanking[obj.Name] then
+                        isSecret = true -- default to secret styling if only in ranking
+                    end
+
+                    highlightModel(obj, obj.Name, isGod, isSecret, mutationText)
+                    anyFound = true
+                    if not firstFoundInfo then
+                        firstFoundInfo = { name = obj.Name, isGod = isGod, isSecret = isSecret, mutation = mutationText }
+                    end
+                end
+            end
         end
     end
 
     if anyFound then
-        showFoundGui()
+        -- show GUI giving the first found match's details
+        if firstFoundInfo then
+            showFoundGui(firstFoundInfo.name, firstFoundInfo.isGod, firstFoundInfo.isSecret, firstFoundInfo.mutation)
+        else
+            showFoundGui()
+        end
     else
         task.wait(0.1)
         searchAllServers()
     end
 end
 
--- Replace your existing searchAllServers with this version that ignores IGNORED_PLACE_ID
+-- searchAllServers with no ignored place id
 function searchAllServers(cursor)
     local url = "https://games.roblox.com/v1/games/" .. PLACE_ID .. "/servers/Public?sortOrder=Asc&limit=100"
     if cursor then url = url .. "&cursor=" .. cursor end
@@ -316,19 +507,14 @@ function searchAllServers(cursor)
         local spid = tostring(server.placeId or "")
         local sroot = tostring(server.rootPlaceId or "")
 
-        -- skip if this server matches the ignored place id
-        if sid == IGNORED_PLACE_ID or spid == IGNORED_PLACE_ID or sroot == IGNORED_PLACE_ID then
-            -- intentionally skip this server
-        else
-            if not getgenv().VisitedServers[server.id] and server.playing < server.maxPlayers then
-                getgenv().VisitedServers[server.id] = true
-                task.delay(0.1, function()
-                    pcall(function()
-                        TeleportService:TeleportToPlaceInstance(PLACE_ID, server.id, LocalPlayer)
-                    end)
+        if not getgenv().VisitedServers[server.id] and server.playing < server.maxPlayers then
+            getgenv().VisitedServers[server.id] = true
+            task.delay(0.1, function()
+                pcall(function()
+                    TeleportService:TeleportToPlaceInstance(PLACE_ID, server.id, LocalPlayer)
                 end)
-                return
-            end
+            end)
+            return
         end
     end
 
@@ -363,6 +549,7 @@ task.spawn(function()
     while task.wait(0.2) do
         local anyFound = false
         local currentMatches = {}
+        local firstFoundInfo = nil
 
         -- scan for matching models
         for _, obj in ipairs(Workspace:GetDescendants()) do
@@ -371,21 +558,42 @@ task.spawn(function()
                 and getgenv().BrainrotConfig[obj.Name]
                 and (brainrotRanking[obj.Name] or brainrotSecrets[obj.Name] or brainrotGods[obj.Name])
             then
-                currentMatches[obj] = true
-                anyFound = true
-
-                if not highlightedModels[obj] then
-                    local isGod = brainrotGods[obj.Name] == true
-                    local isSecret = brainrotSecrets[obj.Name] == true
-                    if not isGod and not isSecret and brainrotRanking[obj.Name] then
-                        isSecret = true
+                -- apply config filtering per-model
+                local entry = getConfigEntry(obj.Name)
+                if entry and entry.Enabled then
+                    local part = getFirstRenderablePart(obj)
+                    local mutationText = getMutation(part)
+                    local pass = false
+                    if entry.Mutation == "Any" or entry.Mutation == "any" or entry.Mutation == "" then
+                        pass = true
+                    else
+                        if sanitizeMutationName(mutationText) == sanitizeMutationName(entry.Mutation) then
+                            pass = true
+                        end
                     end
 
-                    pcall(function()
-                        highlightModel(obj, obj.Name, isGod, isSecret)
-                    end)
+                    if pass then
+                        currentMatches[obj] = true
+                        anyFound = true
 
-                    highlightedModels[obj] = true
+                        if not highlightedModels[obj] then
+                            local isGod = brainrotGods[obj.Name] == true
+                            local isSecret = brainrotSecrets[obj.Name] == true
+                            if not isGod and not isSecret and brainrotRanking[obj.Name] then
+                                isSecret = true
+                            end
+
+                            pcall(function()
+                                highlightModel(obj, obj.Name, isGod, isSecret, mutationText)
+                            end)
+
+                            highlightedModels[obj] = true
+                        end
+
+                        if not firstFoundInfo then
+                            firstFoundInfo = { name = obj.Name, isGod = brainrotGods[obj.Name] == true, isSecret = brainrotSecrets[obj.Name] == true, mutation = mutationText }
+                        end
+                    end
                 end
             end
         end
@@ -401,7 +609,13 @@ task.spawn(function()
             -- ensure the GUI is shown (but don't spam-create it)
             local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
             if playerGui and not playerGui:FindFirstChild("SecretFinderGUI") then
-                pcall(showFoundGui)
+                pcall(function()
+                    if firstFoundInfo then
+                        showFoundGui(firstFoundInfo.name, firstFoundInfo.isGod, firstFoundInfo.isSecret, firstFoundInfo.mutation)
+                    else
+                        showFoundGui()
+                    end
+                end)
             end
         else
             -- nothing found in this server: continue searching/hopping
